@@ -845,43 +845,6 @@ class HeatingControlApp:
                                         t_value = t_value + (end_degas_time - start_degas_time)
                                     time.sleep(self.time_sleep)
 
-                            #current_sp = sp_value
-                            #ramp = abs(sp_value - current_temperature)/t_value
-                            ##print(f"sp_value: ",sp_value)
-                            ##print(f"current_temperature: ",current_temperature)
-                            #if abs(sp_value - current_temperature) < 1:
-                            #    ramp = 0
-                            #self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
-                            ##print(f"Segment Loop #",segment)
-                            ##print(f"Ramp: ",ramp)
-                            #if ramp > 0:
-                            #    self.send_command(self.heat3.set_ramp_rate_t_mode,self.heat3_channel,ramp)
-                            #    #print(f"Inside Positive Ramp")
-                            #    # Wait until current temperature reaches the setpoint or pressure adjustment is needed
-                            #    while (abs(self.temp_value.get() - current_sp) > 0.2) and self.running and self.heat3_thread_running:
-                            #        if self.degas_var.get():  # If Degas is checked
-                            #            current_pressure = self.pressure_value.get()
-                            #            while current_pressure > float(self.pressure_base_value.get()) and self.mg15_thread_running:
-                            #                if current_pressure > float(self.pressure_limit_value.get())*self.degass_factor:
-                            #                    # Adjust the setpoint downward to maintain pressure below the limit
-                            #                    sp_value -= self.temp_step  # Reduce setpoint incrementally (adjust as needed)
-                            #                    self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
-                            #                else:
-                            #                    if current_sp > sp_value:
-                            #                        sp_value += 1  # Return setpoint incrementally (adjust as needed)
-                            #                        self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
-                            #                time.sleep(0.1)
-                            #        time.sleep(0.1)
-                            #    #print(f"Finish Positive Ramp Loop")
-                            #else:
-                            #    # Start the timer for the segment
-                            #    t_value = self.t_values[segment].get()*60 # Convert to second time.time() returns second
-                            #    #print(f"Inside No Ramp")
-                            #    start_time = time.time()
-                            #    while (time.time() - start_time < t_value) and self.running and self.heat3_thread_running:
-                            #        time.sleep(0.1)
-                            #    #print(f"Finish No Ramp")
-                
                     # End of the operation, reset the button and re-enable controls
                     #print(f"Finish Heating Cycle")
                     self.stop_heat3_master()
