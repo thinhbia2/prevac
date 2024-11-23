@@ -12,6 +12,7 @@ from modbusTCP import ModbusTCP
 import threading
 from queue import Queue, Empty
 import time
+from itertools import zip_longest
 
 def on_closing():
     plt.close('all')  # Close all matplotlib plots
@@ -36,11 +37,12 @@ class HeatingControlApp:
 
         # Variables for server IPs and Ports
         self.heat3_channel = 1
-        self.time_interval = 0.3
+        self.time_interval = 0.25
+        self.time_sleep = 0.2
         self.temp_step = 5
-        self.heat3_ip = tk.StringVar(value="192.168.236.50")
+        self.heat3_ip = tk.StringVar(value="192.168.201.252")
         self.heat3_port = tk.IntVar(value=502)
-        self.mg15_ip = tk.StringVar(value="127.0.0.1")
+        self.mg15_ip = tk.StringVar(value="192.168.201.253")
         self.mg15_port = tk.IntVar(value=502)
 
         self.mode_array = ["Auto", "Manual"];
@@ -48,23 +50,24 @@ class HeatingControlApp:
         self.heating_array = ["RES", "EB"];
         self.temp_input_array = ["Tc1", "Tc2", "D1", "D2", "RTD", "Ain1", "Ain2"];
         self.unit_array = ["K","C"];
-        self.vacuum_input_array = ["IG1", "IG2", "IG3"]
+        self.vacuum_input_array = ["IG1", "IG2", "IG3", "CH1", "CH2", "CH3", "CH4"]
 
         self.mode_value = tk.StringVar(value=self.mode_array[0])
         self.ic_ue_value = tk.StringVar(value=self.ic_ue_options[0])
-        self.heating_value = tk.StringVar(value=self.heating_array[0])
-        self.temp_input_value = tk.StringVar(value=self.temp_input_array[0])
+        self.heating_value = tk.StringVar(value=self.heating_array[1])
+        self.temp_input_value = tk.StringVar(value=self.temp_input_array[5])
         self.unit_value = tk.StringVar(value=self.unit_array[1])
         self.vacuum_input_value = tk.StringVar(value=self.vacuum_input_array[0])
-        self.pressure_limit_value = tk.StringVar(value="0.1")
-        
+        self.pressure_limit_value = tk.StringVar(value="5.00e-7")
+        self.pressure_base_value = tk.StringVar(value="5.00e-9")
+
         # Variables to hold the input values
         self.temp_value = tk.DoubleVar(value=0.1)
         self.degass_factor = tk.DoubleVar(value=0.8)
         self.pressure_value = tk.DoubleVar(value=0.1)
-        self.p_value = tk.StringVar(value="100")
+        self.p_value = tk.StringVar(value="90")
         self.i_value = tk.StringVar(value="20")
-        self.d_value = tk.StringVar(value="3")
+        self.d_value = tk.StringVar(value="250")
         self.num_segments_value = tk.StringVar(value="1")
         self.repeat_value = tk.StringVar(value="0") # widget accepts string
         #self.r_values = []
@@ -74,12 +77,18 @@ class HeatingControlApp:
         self.uc_value = tk.DoubleVar(value=0.0)
         self.ie_value = tk.DoubleVar(value=0.0)
         self.ue_value = tk.StringVar(value="0.0")
-        self.ic_limit_value = tk.StringVar(value="3.00")
+        self.ic_limit_value = tk.StringVar(value="4.00")
         self.uc_limit_value = tk.StringVar(value="5.00")
         self.ie_limit_value = tk.StringVar(value="20")
         self.ue_limit_value = tk.StringVar(value="1000")
         self.plot_txt_size = 14
         self.toggle_buttons = {}
+    
+        # Initial empty data for x and y axes
+        self.x_temp = []
+        self.y_temp = []
+        self.x_pressure = []
+        self.y_pressure = []
 
         self.command_queue = Queue()
 
@@ -210,16 +219,16 @@ class HeatingControlApp:
             self.heat3_connected = False
             self.heat3_thread_running = False
             # Stop the HEAT3-PS thread
-            self.heat3_thread.join()  # Wait for the thread to finish
-            self.comm_thread.join()
+            #self.heat3_thread.join()  # Wait for the thread to finish
+            #self.comm_thread.join()
 
             # Clear product and serial numbers
             self.heat3_product_label.config(text="")
             self.heat3_serial_label.config(text="")
             button.config(text="Disconnect", bg="red")
             # Disconnect
-            if self.heat3:
-                self.heat3.close()
+            #if self.heat3:
+            #    self.heat3.close()
 
     def toggle_mg15_connection(self, button):
         if not self.mg15_connected:
@@ -239,20 +248,10 @@ class HeatingControlApp:
             button.config(text="Connected", bg="green")
             self.mg15_connected = True
         else:
-            # Disconnect
-            if self.mg15:
-                self.mg15.close()
+            self.mg15_stop()
+            #if self.mg15:
+            #    self.mg15.close()
 
-            # Stop the MG15 thread
-            self.mg15_thread_running = False
-            #self.mg15_thread.join()  # Wait for the thread to finish
-
-            # Clear the product and serial number display
-            self.mg15_product_label.config(text="")
-            self.mg15_serial_label.config(text="")
-            button.config(text="Disconnect", bg="red")
-            self.mg15_connected = False                     
-            
     def add_third_row(self):
         tk.Label(self.root, text="Working Mode:", font=self.arial14).grid(row=2, column=0, sticky=tk.W)
 
@@ -280,7 +279,7 @@ class HeatingControlApp:
         #self.temp_input.current(0)
         #self.temp_input.bind("<<ComboboxSelected>>", lambda e: self.update_temp_input())
 
-        self.temp_display = tk.Label(self.root, text="0.0", font=self.arial18, width=8)
+        self.temp_display = tk.Label(self.root, textvariable=self.temp_value, font=self.arial18, width=8)
         self.temp_display.grid(row=2, column=5, padx=0, sticky="e")
 
         #tk.Label(self.root, font=self.arial14).grid(row=2, column=7, sticky=tk.W)
@@ -294,9 +293,13 @@ class HeatingControlApp:
         self.degas_check = tk.Checkbutton(self.root, text="Degas", font=self.arial14, variable=self.degas_var, command=self.toggle_degas)
         self.degas_check.grid(row=3, column=0, sticky=tk.W)
 
-        tk.Label(self.root, text="Pressure Limit:", font=self.arial14).grid(row=3, column=1, sticky=tk.W)
-        self.pressure_limit = tk.Entry(self.root, font=self.arial14, width=8, textvariable=self.pressure_limit_value)
-        self.pressure_limit.grid(row=3, column=2, padx=0, sticky=tk.W)
+        tk.Label(self.root, text="Limit:", font=self.arial14).grid(row=3, column=1, sticky=tk.W)
+        self.pressure_limit = tk.Entry(self.root, font=self.arial14, width=7, textvariable=self.pressure_limit_value)
+        self.pressure_limit.grid(row=3, column=1, padx=0, sticky=tk.E)
+
+        tk.Label(self.root, text="Base:", font=self.arial14).grid(row=3, column=2, sticky=tk.W)
+        self.pressure_base = tk.Entry(self.root, font=self.arial14, width=7, textvariable=self.pressure_base_value)
+        self.pressure_base.grid(row=3, column=2, padx=0, sticky=tk.E)
 
         self.pressure_label = tk.Label(self.root, text="mbar", font=self.arial14)
         self.pressure_label.grid(row=3, column=3, sticky=tk.W)
@@ -307,18 +310,19 @@ class HeatingControlApp:
         #tk.Label(self.root, text="Channel:", font=self.arial14).grid(row=3, column=13, sticky=tk.W)
         self.channel = ttk.Combobox(self.root, font=self.arial14, values=self.vacuum_input_array, width=5, textvariable=self.vacuum_input_value)
         self.channel.grid(row=3, column=4, padx=0, sticky=tk.W)
-        self.channel.current(0)
 
-        self.pressure_display = tk.Label(self.root, text="0.0", font=self.arial18, width=8)
+        self.pressure_display = tk.Label(self.root, textvariable=self.pressure_value, font=self.arial18, width=8)
         self.pressure_display.grid(row=3, column=5, padx=0, sticky='e')
         tk.Label(self.root, text="mbar", font=self.arial18).grid(row=3, column=6, sticky=tk.W)
 
     def toggle_degas(self):
         if self.degas_var.get():
             self.pressure_limit.config(state="normal")
+            self.pressure_base.config(state="normal")
             self.pressure_label.config(state="normal")
         else:
             self.pressure_limit.config(state="disabled")
+            self.pressure_base.config(state="disabled")
             self.pressure_label.config(state="disabled")
 
     def add_fourth_row(self):
@@ -657,19 +661,31 @@ class HeatingControlApp:
     def create_plot(self):
         # Create a larger figure for the plot
         self.fig, self.ax = plt.subplots(figsize=(12, 6))  # Adjust size as needed
-        #root.grid_rowconfigure(6, weight=1)  # Make the plot's row resize
-        #root.grid_columnconfigure(0, weight=1)  # Make the plot's column resize     
         self.ax.set_title('Real-Time Plot', fontsize=self.plot_txt_size)
         self.ax.set_xlabel('Time (secs)', fontsize=self.plot_txt_size)
-        self.ax.set_ylabel('Temperature', fontsize=self.plot_txt_size)
+        self.ax.set_ylabel('Temperature (°C)', fontsize=self.plot_txt_size, color='tomato')
         
         # Adjust ticks size (both major and minor)
+        self.ax.tick_params(axis='y', labelcolor='tomato', color='tomato')
+        self.ax.spines['left'].set_color('tomato')  # Set spine color
+
         self.ax.tick_params(axis='both', which='major', labelsize=self.plot_txt_size)  # Major ticks
         self.ax.tick_params(axis='both', which='minor', labelsize=self.plot_txt_size)  # Minor ticks
-    
-        # Initial empty data for x and y axes
-        self.x_data = []
-        self.y_data = []
+
+        # Create the secondary y-axis
+        self.ax_pressure = self.ax.twinx()
+        self.ax_pressure.set_ylabel('Pressure (mbar)', fontsize=self.plot_txt_size, color='cornflowerblue')  # Set y-axis label color to blue
+        
+        # Set pressure y-axis ticks and labels to blue
+        self.ax_pressure.tick_params(axis='y', labelcolor='cornflowerblue', color='cornflowerblue')
+        self.ax_pressure.spines['right'].set_color('cornflowerblue')  # Set spine color
+        self.ax_pressure.spines['left'].set_color('tomato')  # Set spine color
+        self.ax_pressure.tick_params(axis='both', which='major', labelsize=self.plot_txt_size)
+        self.ax_pressure.tick_params(axis='both', which='minor', labelsize=self.plot_txt_size)
+
+        # Initialize Line2D objects for temperature and pressure
+        self.temp_line, = self.ax.plot([], [], color='tomato')  # Set line color to orange
+        self.pressure_line, = self.ax_pressure.plot([], [], color='cornflowerblue')  # Set line color to blue
 
         # Set up the canvas for embedding the plot in the Tkinter window
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
@@ -678,27 +694,31 @@ class HeatingControlApp:
         # Start updating the plot continuously
         #self.update_plot()
 
-    def update_plot(self):
+    def update_plot_temp(self):
         if self.heat3_connected and self.heat3_thread_running:  # Only update the plot if connected to HEAT3-PS
             # Append the current time and temperature to the data
-            current_time = len(self.x_data) * self.time_interval  # Assuming the plot updates every 0.3s
+            current_time = len(self.x_temp) * self.time_interval  # Assuming the plot updates every 0.3s
             current_temp = self.temp_value.get()
 
-            self.x_data.append(current_time)
-            self.y_data.append(current_temp)
-
-            # Clear the axes and plot the new data
-            self.ax.clear()
-            self.ax.set_title('Real-Time Temperature Plot')
-            self.ax.set_xlabel('Time (secs)')
-            self.ax.set_ylabel('Temperature')
-            self.ax.plot(self.x_data, self.y_data, label='Temperature')
-
-            # Redraw the canvas to update the plot with new data
+            self.x_temp.append(current_time)
+            self.y_temp.append(current_temp)
+            self.temp_line.set_data(self.x_temp, self.y_temp)
+            self.ax.relim()
+            self.ax.autoscale_view()
             self.canvas.draw()
 
-            # Schedule the next update in 300ms (0.3 seconds) if still running
-            #self.root.after(int(self.time_interval*1000), self.update_plot)
+    def update_plot_pressure(self):
+        if self.heat3_connected and self.heat3_thread_running:  # Only update the plot if connected to HEAT3-PS
+            # Append the current time and temperature to the data
+            current_time = len(self.x_pressure) * self.time_interval  # Assuming the plot updates every 0.3s
+            current_pressure = self.pressure_value.get()
+
+            self.x_pressure.append(current_time)
+            self.y_pressure.append(current_pressure)
+            self.pressure_line.set_data(self.x_pressure, self.y_pressure)
+            self.ax_pressure.relim()
+            self.ax_pressure.autoscale_view()
+            self.canvas.draw()
 
     def add_control_buttons(self):
         self.start_pause_button = tk.Button(self.root, text="Stop", bg="red", font=self.arial14, command=self.start_pause)
@@ -793,41 +813,74 @@ class HeatingControlApp:
                             else:
                                 current_temperature = self.sp_values[segment-1].get()
                             sp_value = self.sp_values[segment].get()
-                            current_sp = sp_value
                             t_value = self.t_values[segment].get()
-                            ramp = abs(sp_value - current_temperature)/t_value
-                            #print(f"sp_value: ",sp_value)
-                            #print(f"current_temperature: ",current_temperature)
-                            if abs(sp_value - current_temperature) < 1:
-                                ramp = 0
-                            self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
-                            #print(f"Segment Loop #",segment)
-                            #print(f"Ramp: ",ramp)
-                            if ramp > 0:
+                            diff = sp_value - current_temperature
+
+                            if diff > 0:
+                                ramp = diff/t_value
                                 self.send_command(self.heat3.set_ramp_rate_t_mode,self.heat3_channel,ramp)
-                                #print(f"Inside Positive Ramp")
-                                # Wait until current temperature reaches the setpoint or pressure adjustment is needed
-                                while (abs(self.temp_value.get() - current_sp) > 0.2) and self.running and self.heat3_thread_running:
-                                    if self.degas_var.get():  # If Degas is checked
-                                        current_pressure = self.pressure_value.get()
-                                        if current_pressure > float(self.pressure_limit_value.get())*self.degass_factor:
-                                            # Adjust the setpoint downward to maintain pressure below the limit
-                                            sp_value -= self.temp_step  # Reduce setpoint incrementally (adjust as needed)
-                                            self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
-                                        else:
-                                            if current_sp > sp_value:
-                                                sp_value += self.temp_step  # Return setpoint incrementally (adjust as needed)
-                                                self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
-                                    time.sleep(0.1)  # Check the temperature and pressure every 0.1 seconds
-                                #print(f"Finish Positive Ramp Loop")
+                                self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
+                                while self.temp_value.get() < (sp_value - 0.2) and self.running and self.heat3_thread_running:
+                                    if self.degas_var.get():
+                                        self.degas_function(sp_value)
+                                    time.sleep(self.time_sleep)
+                            elif diff < 0:
+                                ramp = abs(diff)/t_value
+                                self.send_command(self.heat3.set_ramp_rate_t_mode,self.heat3_channel,ramp)
+                                self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
+                                while self.temp_value.get() > (sp_value + 0.2) and self.running and self.heat3_thread_running:
+                                    if self.degas_var.get():
+                                        self.degas_function(sp_value)
+                                    time.sleep(self.time_sleep)
                             else:
                                 # Start the timer for the segment
                                 t_value = self.t_values[segment].get()*60 # Convert to second time.time() returns second
                                 #print(f"Inside No Ramp")
                                 start_time = time.time()
                                 while (time.time() - start_time < t_value) and self.running and self.heat3_thread_running:
-                                    time.sleep(0.1)
-                                #print(f"Finish No Ramp")
+                                    if self.degas_var.get():
+                                        start_degas_time = time.time()
+                                        self.degas_function(sp_value)
+                                        end_degas_time = time.time()
+                                        t_value = t_value + (end_degas_time - start_degas_time)
+                                    time.sleep(self.time_sleep)
+
+                            #current_sp = sp_value
+                            #ramp = abs(sp_value - current_temperature)/t_value
+                            ##print(f"sp_value: ",sp_value)
+                            ##print(f"current_temperature: ",current_temperature)
+                            #if abs(sp_value - current_temperature) < 1:
+                            #    ramp = 0
+                            #self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
+                            ##print(f"Segment Loop #",segment)
+                            ##print(f"Ramp: ",ramp)
+                            #if ramp > 0:
+                            #    self.send_command(self.heat3.set_ramp_rate_t_mode,self.heat3_channel,ramp)
+                            #    #print(f"Inside Positive Ramp")
+                            #    # Wait until current temperature reaches the setpoint or pressure adjustment is needed
+                            #    while (abs(self.temp_value.get() - current_sp) > 0.2) and self.running and self.heat3_thread_running:
+                            #        if self.degas_var.get():  # If Degas is checked
+                            #            current_pressure = self.pressure_value.get()
+                            #            while current_pressure > float(self.pressure_base_value.get()) and self.mg15_thread_running:
+                            #                if current_pressure > float(self.pressure_limit_value.get())*self.degass_factor:
+                            #                    # Adjust the setpoint downward to maintain pressure below the limit
+                            #                    sp_value -= self.temp_step  # Reduce setpoint incrementally (adjust as needed)
+                            #                    self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
+                            #                else:
+                            #                    if current_sp > sp_value:
+                            #                        sp_value += 1  # Return setpoint incrementally (adjust as needed)
+                            #                        self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
+                            #                time.sleep(0.1)
+                            #        time.sleep(0.1)
+                            #    #print(f"Finish Positive Ramp Loop")
+                            #else:
+                            #    # Start the timer for the segment
+                            #    t_value = self.t_values[segment].get()*60 # Convert to second time.time() returns second
+                            #    #print(f"Inside No Ramp")
+                            #    start_time = time.time()
+                            #    while (time.time() - start_time < t_value) and self.running and self.heat3_thread_running:
+                            #        time.sleep(0.1)
+                            #    #print(f"Finish No Ramp")
                 
                     # End of the operation, reset the button and re-enable controls
                     #print(f"Finish Heating Cycle")
@@ -845,7 +898,7 @@ class HeatingControlApp:
                         self.send_command(self.heat3.operate_control, self.heat3_channel, 1)
                         self.send_command(self.heat3.run_hold_control, self.heat3_channel, 1)
                     while self.running:
-                        time.sleep(0.1)
+                        time.sleep(self.time_sleep)
 
             except CommunicationError:
                 return
@@ -860,8 +913,8 @@ class HeatingControlApp:
             try:
                 with open(filename, mode='w') as file:
                     # Write the data points, tab-separated (no header)
-                    for x, y in zip(self.x_data, self.y_data):
-                        file.write(f"{x:.2f}\t{y:.2f}\n")
+                    for x, y, w, z in zip_longest(self.x_temp, self.y_temp, self.x_pressure, self.y_pressure, fillvalue=-1):
+                        file.write(f"{x:.2f}\t{y:.1f}\t{w:.2f}\t{z:.2e}\n")
 
             except Exception as e:
                 print(f"Error saving data: {e}")
@@ -895,27 +948,34 @@ class HeatingControlApp:
         temperature = 0
         uc_actual = 0
         ic_actual = 0
+        ue_actual = 0
+        ie_actual = 0
+        
         while self.heat3_connected and self.heat3_thread_running:
             try:
                 # Read temperature from HEAT3-PS (or any other data)
                 # Check the value of temp_input_value and call the corresponding function
                 temperature = self.get_temp()
-                self.temp_value.set(self.kelvin_to_celsius(temperature))
-                self.root.after(0, self.update_temperature_display)
+                self.temp_value.set(f"{self.kelvin_to_celsius(temperature):.1f}")
+                #self.root.after(0, self.update_temperature_display)
 
                 # Read Uc and Ic values and update in a thread-safe way
                 uc_actual = self.send_command(self.heat3.r_actual_value_Uc, self.heat3_channel)
-                self.uc_value.set(uc_actual)
+                self.uc_value.set(f"{uc_actual:.2f}")
                 if self.mode_value.get() == "Auto":
                     if self.heating_value.get() == "RES" or self.ic_ue_value.get() == "Ic":
                         ic_actual = self.send_command(self.heat3.r_actual_value_Ic, self.heat3_channel)
                         self.ic_value.set(f"{ic_actual:.2f}")
-                #if self.heating_value.get() == "EB":
-                #    self.ie_value.set(self.heat3.r_actual_value_Ie())
-                self.root.after(0, self.update_uc_ic_display)
+                    if self.ic_ue_value.get() == "Ue":
+                        ue_actual = self.send_command(self.heat3.r_actual_value_Ue)
+                        self.ue_value.set(f"{ue_actual:.1f}")
+                if self.heating_value.get() == "EB":
+                    ie_actual = self.send_command(self.heat3.r_actual_value_Ie)*1000
+                    self.ie_value.set(f"{ie_actual:.1f}")
+                #self.root.after(0, self.update_uc_ic_display)
                 
                 # Start updating the plot continuously
-                self.root.after(0, self.update_plot)
+                self.root.after(0, self.update_plot_temp)
 
                 # Sleep for a short period (e.g., 0.3 seconds) before the next read
                 time.sleep(self.time_interval)
@@ -927,46 +987,49 @@ class HeatingControlApp:
                 # Re-schedule the next data read
                 #self.schedule_read_heat3_data()
 
-    def update_temperature_display(self):
-        # Update the temperature display (in the main thread)
-        self.temp_display.config(text=f"{self.temp_value.get():.1f}")
-
-    def update_uc_ic_display(self):
-        # Update Uc and Ie displays (in the main thread)
-        #self.uc_value.set(uc_value)
-        self.uc_display.config(text=f"{self.uc_value.get():.2f}")
-        #if self.mode_value.get() == "Auto":
-        #    if self.heating_value.get() == "RES" or self.ic_ue_value.get() == "Ic"
-        #    #self.ie_value.set(ie_value)
-        #        self.ic_display.config(text=f"{self.ic_value.get():.2f}")
-
     def read_mg15_data(self):
-        vacuum_mapping = {
-            "IG1": 1,
-            "IG2": 2,
-            "IG3": 3
-        }
+        vacuum_value = 0
         while self.mg15_thread_running:
             try:
-                vacuum_input_str = self.vacuum_input_value.get()  # This gets 'IG1', 'IG2', or 'IG3'
-
-                if vacuum_input_str in vacuum_mapping:
-                    vacuum_input_num = vacuum_mapping[vacuum_input_str]
-                    vacuum_value = self.mg15.read_vacuum(vacuum_input_num)
-                    self.root.after(0, self.update_pressure_display, vacuum_value)
-                else:
-                    print(f"Unknown vacuum input: {vacuum_input_str}")
-
-                # Sleep for 0.4 seconds before reading again
+                vacuum_input_str = self.vacuum_input_value.get()
+                vacuum_value = self.mg15.read_vacuum(vacuum_input_str)
+                self.pressure_value.set(f"{vacuum_value:.2e}")
+                self.root.after(0, self.update_plot_pressure)
                 time.sleep(self.time_interval)
 
             except Exception as e:
                 print(f"Error reading from MG15: {e}")
+                # Stop the MG15 thread
+                self.mg15_stop()
+                break
+            except TimeoutError:
+                print(f"Error reading from MG15 Timeout")
+                # Stop the MG15 thread
+                self.mg15_stop()
                 break
 
-    def update_pressure_display(self, pressure):
-        self.pressure_value.set(pressure)
-        self.pressure_display.config(text=f"{pressure:.2e}")  # Update pressure display
+    def mg15_stop(self):
+        # Stop the MG15 thread
+        self.mg15_thread_running = False
+        self.mg15_connected = False
+        self.mg15_product_label.config(text="")
+        self.mg15_serial_label.config(text="")
+        self.toggle_buttons["MG15         IP:"].config(text="Disconnect", bg="red")
+
+    def degas_function(self, set_temp):
+        sp_value = set_temp
+        current_pressure = self.pressure_value.get()
+        while current_pressure > float(self.pressure_base_value.get()) and self.running and self.heat3_thread_running and self.mg15_thread_running:
+            degas_nominal_pressure = (float(self.pressure_base_value.get()) + float(self.pressure_limit_value.get()))/2
+            if current_pressure > degas_nominal_pressure:
+                # Adjust the setpoint downward to maintain pressure below the limit
+                sp_value -= self.temp_step                                                                              
+                self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
+            else:
+                if set_temp > sp_value:
+                    sp_value += 1  # Return setpoint incrementally (adjust as needed)
+                    self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))
+            time.sleep(self.time_sleep)
 
     def kelvin_to_celsius(self, temp):
         if self.unit_value.get() == "C":

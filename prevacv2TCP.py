@@ -313,7 +313,7 @@ class prevacV2TCP:
         return self.tcp_send_command(function_code, data)
 
     # 0x7F63: Read actual current value
-    def r_actual_current_value(self, channel: int):
+    def r_actual_current_value(self, channel: str):
         mode_mapping = {
             'Ic': 1,
             'Ie': 2,
@@ -824,11 +824,10 @@ class prevacV2TCP:
         channel = 1
         data = bytes([channel])
         message = self.tcp_send_command(function_code, data)
-        if len(message) == 1:
-            return 0
-        else:
+        if len(message) == 9:
             return self.bytes_to_double(message[1:])
-        #return self.bytes_to_double(message[1:])
+        else:
+            return 0
 
     # 0x4132: Read/write of Ic target value (* only with HV module)   (R/W)
     def set_Ic_target_value(self, channel: int, value: float, rw: int = 1):
@@ -852,11 +851,10 @@ class prevacV2TCP:
         channel = 1
         data = bytes([channel])
         message = self.tcp_send_command(function_code, data)
-        if len(message) == 1:
-            return 0
-        else:
+        if len(message) == 9:
             return self.bytes_to_double(message[1:])
-        #return self.bytes_to_double(message[1:])
+        else:
+            return 0
 
     # 0x413A: Actual process value (R)
     def r_actual_process_value(self, channel: int):

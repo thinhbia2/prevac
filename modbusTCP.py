@@ -15,8 +15,13 @@ class ModbusTCP:
         """
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(2.0)
             self.sock.connect((self.ip_address, self.port))
             print(f"Connected to {self.ip_address}:{self.port}")
+        except socket.timeout:
+            raise TimeoutError(f"Connection to {self.ip_address}:{self.port} timed out")
+            self.sock = None
+            return False
         except socket.error as e:
             print(f"Failed to connect to {self.ip_address}:{self.port}: {e}")
             self.sock = None
@@ -56,17 +61,14 @@ class ModbusTCP:
         data_length = num_words
         data = bytearray([self.device_address, function_code])
         data.extend(reg_address.to_bytes(2, 'big'))
-        data.extend(num_words.to_bytes(data_length, 'big'))
+        data.extend(num_words.to_bytes(2, 'big'))
         frame_length = len(data)
-        crc = self.crc16_modbus(data)
-        data.extend(crc.to_bytes(2, 'little')) # historical Modbus, crc is little endian
         
         data_frame = bytearray()
         data_frame.extend(transaction_id.to_bytes(2, 'big'))
         data_frame.extend(self.protocol_id.to_bytes(2, 'big'))
         data_frame.extend(frame_length.to_bytes(2, 'big'))
         data_frame.extend(data)
-        
         return data_frame
 
     def tcp_send_command(self, request):
@@ -78,8 +80,13 @@ class ModbusTCP:
 
         try:
             self.sock.sendall(request)
+            #print(request.hex())
             response = self.sock.recv(1024)  # Buffer size is 1024 bytes
+            #print(response.hex())
             return response
+        except socket.timeout:
+            raise TimeoutError("Receiving data timed out")
+            return None
         except socket.error as e:
             print(f"Failed to send or receive data: {e}")
             return None
@@ -99,7 +106,7 @@ class ModbusTCP:
         modbus_data = response[9:9 + byte_count]
         return modbus_data  # Return the raw data to be converted by the calling function
 
-    def read_vacuum(self, channel_number, status=0):
+    def read_vacuum(self, channel, status=0):
         """
         Read vacuum value (float) or status (uint8) based on the channel and status flag.
         
@@ -107,6 +114,20 @@ class ModbusTCP:
         :param status: 0 = read vacuum value (float), 1 = read status (uint8) (default is 0)
         :return: The value read from the register (float or uint8)
         """
+        vacuum_mapping = {
+            "IG1": 1,
+            "IG2": 2,
+            "IG3": 3,
+            "CH1": 4,
+            "CH2": 5,
+            "CH3": 6,
+            "CH4": 7
+        }
+
+        # Check if the unit is valid, otherwise raise an error
+        if channel not in vacuum_mapping:
+            raise ValueError(f"Invalid unit '{channel}'. Must be one of IG1, IG2, IG3, CH1, CH2, CH3, CH4.")
+        channel_number = vacuum_mapping[channel]
         # Validate the inputs
         if channel_number < 1 or channel_number > 7:
             raise ValueError("Channel number must be between 1 and 7")
@@ -145,15 +166,15 @@ class ModbusTCP:
 
     def read_product_number(self):
         """
-        Read product number 15⋅CHAR.
+        Read product number 18⋅CHAR.
 
         """
 
         # Build the Modbus TCP request frame
         transaction_id = 1  # Example transaction ID
         function_code = 0x03  # Read holding registers
-        reg_address = 0x1001  # Address
-        num_words = 15         #15 characters
+        reg_address = 0x1392  # Address
+        num_words = 9         # 18 characters
         request = self.build_data_frame(transaction_id, function_code, reg_address, num_words)
 
         response = self.tcp_send_command(request)
@@ -162,15 +183,15 @@ class ModbusTCP:
 
     def read_serial_number(self):
         """
-        Read seiral number 13⋅CHAR.
+        Read seiral number 16⋅CHAR.
 
         """
 
         # Build the Modbus TCP request frame
         transaction_id = 1  # Example transaction ID
         function_code = 0x03  # Read holding registers
-        reg_address = 0x1009  # Address
-        num_words = 13         #13 characters
+        reg_address = 0x1388  # Address
+        num_words = 8         # 16 characters
         request = self.build_data_frame(transaction_id, function_code, reg_address, num_words)
 
         response = self.tcp_send_command(request)
