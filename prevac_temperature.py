@@ -9,9 +9,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 from prevacv2TCP import prevacV2TCP
 from modbusTCP import ModbusTCP
+from xgs600 import XGS600Controller
 import threading
 from queue import Queue, Empty
 import time
+import random
 from itertools import zip_longest
 
 def on_closing():
@@ -26,11 +28,12 @@ class HeatingControlApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Prevac Heating Control System")
-        self.root.geometry("1200x1000")
+        self.root.geometry("1200x1050")
         self.root.config(padx=20, pady=20)
 
         self.heat3 = None
         self.mg15 = None
+        self.xgs600 = None
 
         self.arial14 = tkFont.Font(family='Arial', size=14)
         self.arial18 = tkFont.Font(family='Arial', size=18)
@@ -40,10 +43,13 @@ class HeatingControlApp:
         self.time_interval = 0.25
         self.time_sleep = 0.2
         self.temp_step = 5
-        self.heat3_ip = tk.StringVar(value="192.168.201.252")
+        self.heat3_ip = tk.StringVar(value="192.168.236.50")
         self.heat3_port = tk.IntVar(value=502)
-        self.mg15_ip = tk.StringVar(value="192.168.201.253")
+        self.mg15_ip = tk.StringVar(value="127.0.0.1")
         self.mg15_port = tk.IntVar(value=502)
+        self.xgs600_add = tk.StringVar(value="00")
+        self.xgs600_port = tk.StringVar(value="COM1")
+        self.xgs600_port_array = ["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"]
 
         self.mode_array = ["Auto", "Manual"];
         self.ic_ue_options = ["Ic", "Ue"]
@@ -54,23 +60,22 @@ class HeatingControlApp:
 
         self.mode_value = tk.StringVar(value=self.mode_array[0])
         self.ic_ue_value = tk.StringVar(value=self.ic_ue_options[0])
-        self.heating_value = tk.StringVar(value=self.heating_array[1])
-        self.temp_input_value = tk.StringVar(value=self.temp_input_array[5])
+        self.heating_value = tk.StringVar(value=self.heating_array[0])
+        self.temp_input_value = tk.StringVar(value=self.temp_input_array[0])
         self.unit_value = tk.StringVar(value=self.unit_array[1])
-        self.vacuum_input_value = tk.StringVar(value=self.vacuum_input_array[0])
-        self.pressure_limit_value = tk.StringVar(value="5.00e-7")
-        self.pressure_base_value = tk.StringVar(value="5.00e-9")
+        self.vacuum_input_value = tk.StringVar(value=self.vacuum_input_array[1])
+        self.pressure_limit_value = tk.StringVar(value="1.00e-7")
+        self.pressure_base_value = tk.StringVar(value="1.00e-9")
 
         # Variables to hold the input values
         self.temp_value = tk.DoubleVar(value=0.1)
-        self.degass_factor = tk.DoubleVar(value=0.8)
+        self.degass_factor = tk.DoubleVar(value=0.6)
         self.pressure_value = tk.DoubleVar(value=0.1)
-        self.p_value = tk.StringVar(value="90")
+        self.p_value = tk.StringVar(value="100")
         self.i_value = tk.StringVar(value="20")
-        self.d_value = tk.StringVar(value="250")
+        self.d_value = tk.StringVar(value="3")
         self.num_segments_value = tk.StringVar(value="1")
         self.repeat_value = tk.StringVar(value="0") # widget accepts string
-        #self.r_values = []
         self.sp_values = []
         self.t_values = []
         self.ic_value = tk.StringVar(value="0.0")
@@ -95,8 +100,10 @@ class HeatingControlApp:
         # For toggle button states
         self.heat3_connected = False
         self.mg15_connected = False
+        self.xgs600_connected = False
         self.heat3_thread_running = False
         self.mg15_thread_running = False
+        self.xgs600_thread_running = False
 
         self.run_thread = None
         self.running = False
@@ -159,7 +166,14 @@ class HeatingControlApp:
         self.mg15_product_label.grid(row=1, column=4, padx=5, sticky=tk.W)
         self.mg15_serial_label = tk.Label(self.root, text="", font=self.arial14)
         self.mg15_serial_label.grid(row=1, column=5, padx=5, sticky=tk.W)
+
+        # Third row: XGS-600 Address and Port input with connect/disconnect button
+        self.add_second_row(2, "XGS-600 Add:", self.xgs600_add, self.xgs600_port, self.toggle_xgs600_connection)
         
+        # Labels for XGS-600 Software Revision
+        self.xgs600_sw_version_label = tk.Label(self.root, text="", font=self.arial14)
+        self.xgs600_sw_version_label.grid(row=2, column=4, padx=5, sticky=tk.W)
+
         # Third row: Mode and Heating dropboxes, temperature display and unit selection
         self.add_third_row()
 
@@ -187,7 +201,22 @@ class HeatingControlApp:
 
         toggle_button = tk.Button(self.root, text="Disconnect", font=self.arial14, bg="red", command=lambda: toggle_callback(toggle_button))
         toggle_button.grid(row=row, column=3, padx=0, sticky=tk.W)
-        
+
+        self.toggle_buttons[label] = toggle_button
+
+    def add_second_row(self, row, label, add_var, port_var, toggle_callback):
+        tk.Label(self.root, width=11, text=label, font=self.arial14).grid(row=row, padx=0, pady=0, column=0, sticky=tk.W)
+        ip_entry = tk.Entry(self.root, font=self.arial14, width=15, textvariable=add_var)
+        ip_entry.grid(row=row, column=1, padx=0, sticky=tk.W)
+
+        port_entry = ttk.Combobox(self.root, font=self.arial14, values=self.xgs600_port_array, width=5, textvariable=port_var)
+        port_entry.grid(row=row, column=2, padx=0, sticky=tk.W)
+        port_entry.current(3)
+        #self.heating.bind("<<ComboboxSelected>>", lambda e: self.update_mode_settings())
+
+        toggle_button = tk.Button(self.root, text="Disconnect", font=self.arial14, bg="red", command=lambda: toggle_callback(toggle_button))
+        toggle_button.grid(row=row, column=3, padx=0, sticky=tk.W)
+
         self.toggle_buttons[label] = toggle_button
 
     def toggle_heat3_connection(self, button):
@@ -234,26 +263,44 @@ class HeatingControlApp:
         if not self.mg15_connected:
             # Connect
             self.mg15 = ModbusTCP(self.mg15_ip.get(), self.mg15_port.get())
-            self.mg15.connect()
-            
-            # Start the MG15 reading thread
-            self.mg15_thread_running = True
-            self.mg15_thread = threading.Thread(target=self.read_mg15_data)
-            self.mg15_thread.start()
+            if self.mg15.connect():
+                self.toggle_buttons["XGS-600 Add:"].config(state="disabled")
+                
+                # Start the MG15 reading thread
+                self.mg15_thread_running = True
+                self.mg15_thread = threading.Thread(target=self.read_mg15_data)
+                self.mg15_thread.start()
 
-            product_number = self.mg15.read_product_number()
-            serial_number = self.mg15.read_serial_number()
-            self.mg15_product_label.config(text=f"{product_number}")
-            self.mg15_serial_label.config(text=f"{serial_number}")
-            button.config(text="Connected", bg="green")
-            self.mg15_connected = True
+                product_number = self.mg15.read_product_number()
+                serial_number = self.mg15.read_serial_number()
+                self.mg15_product_label.config(text=f"{product_number}")
+                self.mg15_serial_label.config(text=f"{serial_number}")
+                button.config(text="Connected", bg="green")
+                self.mg15_connected = True
         else:
             self.mg15_stop()
             #if self.mg15:
             #    self.mg15.close()
 
+    def toggle_xgs600_connection(self, button):
+        if not self.xgs600_connected:
+            self.xgs600 = XGS600Controller(self.xgs600_add.get(), self.xgs600_port.get())
+            if self.xgs600.connect():
+                self.toggle_buttons["MG15         IP:"].config(state="disabled")
+
+                self.xgs600_thread_running = True
+                self.xgs600_thread = threading.Thread(target=self.read_xgs600_data)
+                self.xgs600_thread.start()
+
+                sw_version = self.xgs600.read_sw_version()
+                self.xgs600_sw_version_label.config(text=f"{sw_version}")
+                button.config(text="Connected", bg="green")
+                self.xgs600_connected = True
+        else:
+            self.xgs600_stop()
+
     def add_third_row(self):
-        tk.Label(self.root, text="Working Mode:", font=self.arial14).grid(row=2, column=0, sticky=tk.W)
+        tk.Label(self.root, text="Working Mode:", font=self.arial14).grid(row=3, column=0, sticky=tk.W)
 
         mode_frame = tk.Frame(self.root)
         self.mode = ttk.Combobox(mode_frame, font=self.arial14, values=self.mode_array, width=6, textvariable=self.mode_value)
@@ -265,55 +312,55 @@ class HeatingControlApp:
         self.ic_ue_combobox.pack(side="left", padx=0)  # Pack it next to the Heating Mode Combobox
         self.ic_ue_combobox.pack_forget()  # Hide initially
         self.ic_ue_combobox.bind("<<ComboboxSelected>>", lambda e: self.update_ic_ue_controls())
-        mode_frame.grid(row=2, column=1, padx=0, sticky=tk.W)
+        mode_frame.grid(row=3, column=1, padx=0, sticky=tk.W)
 
-        tk.Label(self.root, text="Heating Mode:", font=self.arial14).grid(row=2, column=2, sticky=tk.W)  
+        tk.Label(self.root, text="Heating Mode:", font=self.arial14).grid(row=3, column=2, sticky=tk.W)
         self.heating = ttk.Combobox(self.root, font=self.arial14, values=self.heating_array, width=4, textvariable=self.heating_value)
-        self.heating.grid(row=2, column=3, padx=0, sticky=tk.W)
+        self.heating.grid(row=3, column=3, padx=0, sticky=tk.W)
         self.heating.current(0)
         self.heating.bind("<<ComboboxSelected>>", lambda e: self.update_mode_settings())
 
-        #tk.Label(self.root, text="Input:", font=self.arial14).grid(row=2, column=4, sticky=tk.W)
+        #tk.Label(self.root, text="Input:", font=self.arial14).grid(row=3, column=4, sticky=tk.W)
         self.temp_input = ttk.Combobox(self.root, font=self.arial14, values=self.temp_input_array, width=5, textvariable=self.temp_input_value)
-        self.temp_input.grid(row=2, column=4, padx=0, sticky=tk.W)
+        self.temp_input.grid(row=3, column=4, padx=0, sticky=tk.W)
         #self.temp_input.current(0)
         #self.temp_input.bind("<<ComboboxSelected>>", lambda e: self.update_temp_input())
 
         self.temp_display = tk.Label(self.root, textvariable=self.temp_value, font=self.arial18, width=8)
-        self.temp_display.grid(row=2, column=5, padx=0, sticky="e")
+        self.temp_display.grid(row=3, column=5, padx=0, sticky="e")
 
-        #tk.Label(self.root, font=self.arial14).grid(row=2, column=7, sticky=tk.W)
+        #tk.Label(self.root, font=self.arial14).grid(row=3, column=7, sticky=tk.W)
         self.temp_unit = ttk.Combobox(self.root, font=self.arial18, values=self.unit_array, width=3, textvariable=self.unit_value)
-        self.temp_unit.grid(row=2, column=6, padx=0, sticky=tk.W)
+        self.temp_unit.grid(row=3, column=6, padx=0, sticky=tk.W)
         self.temp_unit.current(1)
         #self.temp_input.bind("<<ComboboxSelected>>", lambda e: self.update_temp_unit())
 
     def add_degas_row(self):
         self.degas_var = tk.IntVar()
         self.degas_check = tk.Checkbutton(self.root, text="Degas", font=self.arial14, variable=self.degas_var, command=self.toggle_degas)
-        self.degas_check.grid(row=3, column=0, sticky=tk.W)
+        self.degas_check.grid(row=4, column=0, sticky=tk.W)
 
-        tk.Label(self.root, text="Limit:", font=self.arial14).grid(row=3, column=1, sticky=tk.W)
+        tk.Label(self.root, text="Limit:", font=self.arial14).grid(row=4, column=1, sticky=tk.W)
         self.pressure_limit = tk.Entry(self.root, font=self.arial14, width=7, textvariable=self.pressure_limit_value)
-        self.pressure_limit.grid(row=3, column=1, padx=0, sticky=tk.E)
+        self.pressure_limit.grid(row=4, column=1, padx=0, sticky=tk.E)
 
-        tk.Label(self.root, text="Base:", font=self.arial14).grid(row=3, column=2, sticky=tk.W)
+        tk.Label(self.root, text="Base:", font=self.arial14).grid(row=4, column=2, sticky=tk.W)
         self.pressure_base = tk.Entry(self.root, font=self.arial14, width=7, textvariable=self.pressure_base_value)
-        self.pressure_base.grid(row=3, column=2, padx=0, sticky=tk.E)
+        self.pressure_base.grid(row=4, column=2, padx=0, sticky=tk.E)
 
         self.pressure_label = tk.Label(self.root, text="mbar", font=self.arial14)
-        self.pressure_label.grid(row=3, column=3, sticky=tk.W)
+        self.pressure_label.grid(row=4, column=3, sticky=tk.W)
 
         # Initial state is greyed out
         self.toggle_degas()
 
-        #tk.Label(self.root, text="Channel:", font=self.arial14).grid(row=3, column=13, sticky=tk.W)
+        #tk.Label(self.root, text="Channel:", font=self.arial14).grid(row=4, column=13, sticky=tk.W)
         self.channel = ttk.Combobox(self.root, font=self.arial14, values=self.vacuum_input_array, width=5, textvariable=self.vacuum_input_value)
-        self.channel.grid(row=3, column=4, padx=0, sticky=tk.W)
+        self.channel.grid(row=4, column=4, padx=0, sticky=tk.W)
 
         self.pressure_display = tk.Label(self.root, textvariable=self.pressure_value, font=self.arial18, width=8)
-        self.pressure_display.grid(row=3, column=5, padx=0, sticky='e')
-        tk.Label(self.root, text="mbar", font=self.arial18).grid(row=3, column=6, sticky=tk.W)
+        self.pressure_display.grid(row=4, column=5, padx=0, sticky='e')
+        tk.Label(self.root, text="mbar", font=self.arial18).grid(row=4, column=6, sticky=tk.W)
 
     def toggle_degas(self):
         if self.degas_var.get():
@@ -328,7 +375,7 @@ class HeatingControlApp:
     def add_fourth_row(self):
         # Frame to contain the two columns
         self.fourth_row_frame = tk.Frame(self.root)
-        self.fourth_row_frame.grid(row=4, column=0, columnspan=17, pady=10, sticky=tk.W)
+        self.fourth_row_frame.grid(row=5, column=0, columnspan=17, pady=10, sticky=tk.W)
 
         # First Column (PID Settings)
         self.pid_frame = tk.LabelFrame(self.fourth_row_frame, text="PID Settings", font=self.arial14)
@@ -503,6 +550,32 @@ class HeatingControlApp:
         except ValueError:
             print("Invalid input for limit Ue value. Please enter a valid number.")
 
+    def handle_free_sp_input_event(self, event):
+        try:
+            sp_value = float(self.sp_values[0].get())  # Get the new value from the entry
+            t_value = self.t_values[0].get()
+            current_temperature = self.temp_value.get()
+            diff = sp_value - current_temperature
+            ramp = abs(diff)/t_value
+  
+            if self.running and self.heat3_thread_running:   
+                self.send_command(self.heat3.set_setpoint_t_mode,self.heat3_channel,self.celsius_to_kelvin(sp_value))         
+                self.send_command(self.heat3.set_ramp_rate_t_mode,self.heat3_channel,ramp)
+        except ValueError:
+            print("Invalid input for free value. Please enter a valid number.")
+
+    def handle_free_t_input_event(self, event):
+        try:
+            sp_value = float(self.sp_values[0].get())  # Get the new value from the entry
+            t_value = self.t_values[0].get()
+            current_temperature = self.temp_value.get()
+            diff = sp_value - current_temperature
+            ramp = abs(diff)/t_value
+  
+            if self.running and self.heat3_thread_running:            
+                self.send_command(self.heat3.set_ramp_rate_t_mode,self.heat3_channel,ramp)
+        except ValueError:
+            print("Invalid input for free value. Please enter a valid number.")
     def update_mode_settings(self):
         mode = self.mode_value.get()
         heating = self.heating_value.get()
@@ -641,11 +714,17 @@ class HeatingControlApp:
             t_label.grid(row=1, column=column_index, sticky="w", padx=10, pady=5)
             t_input = tk.Entry(self.segment_frame, width=4, textvariable=self.t_values[i], font=self.arial14)
             t_input.grid(row=1, column=column_index + 1, padx=0, pady=5, sticky="w")
+            # Bind event for only the first input boxes
+            if num_segments == 1:
+                sp_input.bind("<FocusOut>", self.handle_free_sp_input_event)
+                sp_input.bind("<Return>", self.handle_free_sp_input_event)
+                t_input.bind("<FocusOut>", self.handle_free_t_input_event)
+                t_input.bind("<Return>", self.handle_free_t_input_event)
 
     def add_fifth_row(self):
         # Create a frame for the segment inputs
         self.segment_frame = tk.Frame(self.root)
-        self.segment_frame.grid(row=5, column=0, columnspan=17, sticky="w")  # Align to the left
+        self.segment_frame.grid(row=6, column=0, columnspan=17, sticky="w")  # Align to the left
 
         self.create_segment_inputs()
         self.num_segments_value.trace("w", lambda *args: self.create_segment_inputs())
@@ -653,7 +732,7 @@ class HeatingControlApp:
     def add_sixth_row(self):
         # Create a frame for the plot if necessary, or embed the plot directly
         self.plot_frame = tk.Frame(self.root)
-        self.plot_frame.grid(row=6, column=0, columnspan=8, sticky="w")
+        self.plot_frame.grid(row=7, column=0, columnspan=8, sticky="w")
 
         # Call the create_plot function to initialize the plot
         self.create_plot()
@@ -702,7 +781,7 @@ class HeatingControlApp:
 
             self.x_temp.append(current_time)
             self.y_temp.append(current_temp)
-            self.temp_line.set_data(self.x_temp, self.y_temp)
+            self.temp_line.set_data(self.x_temp, self.y_temp)                             
             self.ax.relim()
             self.ax.autoscale_view()
             self.canvas.draw()
@@ -714,7 +793,7 @@ class HeatingControlApp:
             current_pressure = self.pressure_value.get()
 
             self.x_pressure.append(current_time)
-            self.y_pressure.append(current_pressure)
+            self.y_pressure.append(current_pressure)                                                            
             self.pressure_line.set_data(self.x_pressure, self.y_pressure)
             self.ax_pressure.relim()
             self.ax_pressure.autoscale_view()
@@ -722,10 +801,10 @@ class HeatingControlApp:
 
     def add_control_buttons(self):
         self.start_pause_button = tk.Button(self.root, text="Stop", bg="red", font=self.arial14, command=self.start_pause)
-        self.start_pause_button.grid(row=8, column=2, padx=0, pady=10, sticky='e')
+        self.start_pause_button.grid(row=9, column=2, padx=0, pady=10, sticky='e')
 
         self.save_button = tk.Button(self.root, text="Save", font=self.arial14, command=self.save_data)
-        self.save_button.grid(row=8, column=3, padx=10, pady=10, sticky='w')
+        self.save_button.grid(row=9, column=3, padx=10, pady=10, sticky='w')
 
     def start_pause(self):
         if self.heat3_connected and self.heat3_thread_running:
@@ -816,6 +895,9 @@ class HeatingControlApp:
                             t_value = self.t_values[segment].get()
                             diff = sp_value - current_temperature
 
+                            if num_segments == 1:
+                                while self.running and self.heat3_thread_running:
+                                    time.sleep(self.time_sleep)
                             if diff > 0:
                                 ramp = diff/t_value
                                 self.send_command(self.heat3.set_ramp_rate_t_mode,self.heat3_channel,ramp)
@@ -920,7 +1002,6 @@ class HeatingControlApp:
                 # Check the value of temp_input_value and call the corresponding function
                 temperature = self.get_temp()
                 self.temp_value.set(f"{self.kelvin_to_celsius(temperature):.1f}")
-                #self.root.after(0, self.update_temperature_display)
 
                 # Read Uc and Ic values and update in a thread-safe way
                 uc_actual = self.send_command(self.heat3.r_actual_value_Uc, self.heat3_channel)
@@ -971,6 +1052,27 @@ class HeatingControlApp:
                 self.mg15_stop()
                 break
 
+    def read_xgs600_data(self):
+        vacuum_value = 0
+        while self.xgs600_thread_running:
+            try:
+                vacuum_input_str = self.vacuum_input_value.get()
+                vacuum_value = self.xgs600.read_pressure(vacuum_input_str)
+                self.pressure_value.set(f"{vacuum_value:.2e}")
+                self.root.after(0, self.update_plot_pressure)
+                time.sleep(self.time_interval)
+
+            except Exception as e:
+                print(f"Error reading from XGS-600: {e}")
+                # Stop the XGS-600 thread
+                self.xgs600_stop()
+                break
+            except TimeoutError:
+                print(f"Error reading from XGS-600 Timeout")
+                # Stop the XGS-600 thread
+                self.xgs600_stop()
+                break
+
     def mg15_stop(self):
         # Stop the MG15 thread
         self.mg15_thread_running = False
@@ -978,6 +1080,15 @@ class HeatingControlApp:
         self.mg15_product_label.config(text="")
         self.mg15_serial_label.config(text="")
         self.toggle_buttons["MG15         IP:"].config(text="Disconnect", bg="red")
+        self.toggle_buttons["XGS-600 Add:"].config(state="normal")
+
+    def xgs600_stop(self):
+        # Stop the XGS-600 thread
+        self.xgs600_thread_running = False
+        self.xgs600_connected = False
+        self.xgs600_sw_version_label.config(text="")
+        self.toggle_buttons["XGS-600 Add:"].config(text="Disconnect", bg="red")
+        self.toggle_buttons["MG15         IP:"].config(state="normal")
 
     def degas_function(self, set_temp):
         sp_value = set_temp
