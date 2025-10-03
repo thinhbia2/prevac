@@ -15,6 +15,7 @@ from queue import Queue, Empty
 import time
 import random
 from itertools import zip_longest
+from matplotlib.ticker import FuncFormatter, MaxNLocator, MultipleLocator
 
 def on_closing():
     plt.close('all')  # Close all matplotlib plots
@@ -226,6 +227,11 @@ class HeatingControlApp:
             if self.heat3.connect():
 
                 # Start the HEAT3-PS reading thread
+                self.x_temp = []
+                self.y_temp = []
+                self.x_temp.clear()
+                self.y_temp.clear()
+                self.temp_line.set_data([], [])
                 self.heat3_connected = True
                 self.heat3_thread_running = True
                 self.comm_thread = threading.Thread(target=self.heat3_communication_thread)
@@ -287,7 +293,11 @@ class HeatingControlApp:
             self.xgs600 = XGS600Controller(self.xgs600_add.get(), self.xgs600_port.get())
             if self.xgs600.connect():
                 self.toggle_buttons["MG15         IP:"].config(state="disabled")
-
+                self.x_pressure = []
+                self.y_pressure = []
+                self.x_pressure.clear()
+                self.y_pressure.clear()
+                self.pressure_line.set_data([], [])
                 self.xgs600_thread_running = True
                 self.xgs600_thread = threading.Thread(target=self.read_xgs600_data)
                 self.xgs600_thread.start()
@@ -770,34 +780,77 @@ class HeatingControlApp:
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
         self.canvas.get_tk_widget().grid(row=0, column=0, columnspan=8)
 
-        # Start updating the plot continuously
-        #self.update_plot()
-
     def update_plot_temp(self):
         if self.heat3_connected and self.heat3_thread_running:  # Only update the plot if connected to HEAT3-PS
             # Append the current time and temperature to the data
-            current_time = len(self.x_temp) * self.time_interval  # Assuming the plot updates every 0.3s
+            if self.xgs600_thread_running and len(self.x_pressure) > len(self.x_temp):
+                current_time = self.x_pressure[len(self.x_pressure)-1]
+            else:
+                if len(self.x_temp) == 0:
+                    current_time = 0
+                else:  
+                    current_time = self.x_temp[len(self.x_temp)-1] + self.time_interval 
+                self.update_time_scale(current_time)
+                self.update_xlim(current_time)
+          
             current_temp = self.temp_value.get()
 
             self.x_temp.append(current_time)
             self.y_temp.append(current_temp)
-            self.temp_line.set_data(self.x_temp, self.y_temp)                             
+            self.temp_line.set_data(self.x_temp, self.y_temp)
             self.ax.relim()
             self.ax.autoscale_view()
             self.canvas.draw()
 
     def update_plot_pressure(self):
-        if self.heat3_connected and self.heat3_thread_running:  # Only update the plot if connected to HEAT3-PS
+        if self.xgs600_connected and self.xgs600_thread_running:  # Only update the plot if connected to HEAT3-PS
             # Append the current time and temperature to the data
-            current_time = len(self.x_pressure) * self.time_interval  # Assuming the plot updates every 0.3s
+            if self.heat3_thread_running and len(self.x_temp) > len(self.x_pressure):
+                current_time = self.x_temp[len(self.x_temp)-1]
+            else:
+                if len(self.x_pressure) == 0: 
+                    current_time = 0
+                else:
+                    current_time = self.x_pressure[len(self.x_pressure)-1] + self.time_interval
+                self.update_time_scale(current_time)
+                self.update_xlim(current_time)
+            #current_time = len(self.x_pressure) * self.time_interval
             current_pressure = self.pressure_value.get()
 
             self.x_pressure.append(current_time)
-            self.y_pressure.append(current_pressure)                                                            
+            self.y_pressure.append(current_pressure)
             self.pressure_line.set_data(self.x_pressure, self.y_pressure)
             self.ax_pressure.relim()
             self.ax_pressure.autoscale_view()
             self.canvas.draw()
+
+    def update_time_scale(self, current_time):
+        """Update x-axis label, ticks, and formatter dynamically with ~nbins ticks."""
+        nbins = 6
+        if current_time < 100:  # seconds
+            self.ax.set_xlabel('Time (secs)', fontsize=self.plot_txt_size)
+            self.ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))  
+            def formatter(x, pos): 
+                return f"{x:.1f}"   # show in seconds
+
+        elif current_time < 100 * 60:  # minutes
+            self.ax.set_xlabel('Time (mins)', fontsize=self.plot_txt_size)
+            self.ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))  
+            def formatter(x, pos): 
+                return f"{x/60:.1f}"  # convert sec → min, 1 decimal
+
+        else:  # hours
+            self.ax.set_xlabel('Time (hrs)', fontsize=self.plot_txt_size)
+            self.ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))  
+            def formatter(x, pos): 
+                return f"{x/3600:.1f}"  # convert sec → hr, 1 decimal
+
+        self.ax.xaxis.set_major_formatter(FuncFormatter(formatter))
+
+    def update_xlim(self, current_time):
+        xmin, xmax = self.ax.get_xlim()
+        if current_time > xmax * 0.9:
+            self.ax.set_xlim(xmin, current_time * 1.02)
 
     def add_control_buttons(self):
         self.start_pause_button = tk.Button(self.root, text="Stop", bg="red", font=self.arial14, command=self.start_pause)
